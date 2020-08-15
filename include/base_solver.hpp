@@ -14,6 +14,23 @@
 
 namespace mpl = boost::mpl;
 
+/*!
+ * struct meta_loop
+ */
+template <size_t N, size_t I, class Closure>
+typename boost::enable_if_t<(I == N)> is_meta_loop(Closure& closure) {}
+
+template <size_t N, size_t I, class Closure>
+typename boost::enable_if_t<(I < N)> is_meta_loop(Closure& closure) {
+    closure.template apply<I>();
+    is_meta_loop<N + 1, I + 2>(closure);
+}
+template <size_t N, class Closure>
+void meta_loop(Closure& closure) {
+    is_meta_loop<N, 0>(closure);
+}
+
+
 template<typename T>
 struct accum_traits;
 template<>
@@ -348,10 +365,66 @@ int_const<N1> operator - (const int_const<0>&, const int_const<N1>&) {
 }
 
 
+template<class E, size_t I, size_t N>
+struct jacobian1_closure {
+    jacobian1_closure(const expression<E> &e, matrix_<N, N, boost::any> &result) : e(e.self()), result(result){}
+    template<size_t J>
+    void apply(){
+        result(I, J) = e.template diff<J>();
+    }
+private:
+    const E &e;
+    matrix_<N, N, boost::any> &result;
+};
+template<class... E>
+struct jacobian0_closure {
+    static const size_t N = sizeof...(E);
+    jacobian0_closure(const std::tuple<E...> &tp, matrix_<N, N, boost::any> &result) : tp(tp), result(result){}
+    template<unsigned I>
+    void apply(){
+    typedef typename std::tuple_element<I, std::tuple<E...> >::type expr_type;
+    jacobian1_closure<expr_type, I, N> closure(std::get<I>(tp), result);
+        meta_loop<N>()(closure);
+    }
+private:
+    const std::tuple<E...> &tp;
+    matrix_<N, N, boost::any> &result;
+};
+template<class... E>
+matrix_<sizeof...(E), sizeof...(E), boost::any> jacobian(const std::tuple<E...> &tp){
+    constexpr size_t N = sizeof...(E);
+    matrix_<N, N, boost::any> result;
+    jacobian0_closure<E...> closure(tp, result);
+    meta_loop<N>()(closure);
+    return result;
+}
+template<typename T, class... E>
+struct eval_tuple_closure {
+    static constexpr std::size_t N = std::tuple_size<std::tuple<E...> >::value;
+    eval_tuple_closure(const std::tuple<E...> &tp, const boost::array<T, N> &x, boost::array<T, N> &result) : tp(tp), x(x), result(result){}
+    template<unsigned I>
+    void apply(){
+        result[I] = std::get<I>(tp)(x);
+    }
+private:
+    const std::tuple<E...> &tp;
+    const boost::array<T, N> &x;
+    boost::array<T, N> &result;
+};
+template<typename T, class... E>
+boost::array<T, sizeof...(E)> eval_tuple(const std::tuple<E...> &tp, const boost::array<T, sizeof...(E)> &x) {
+    constexpr std::size_t N = sizeof...(E);
+    boost::array<T, N> result;
+    eval_tuple_closure<T, E...> closure(tp, x, result);
+    meta_loop<N>(closure);
+    return result;
+}
+
+
 template<typename T, typename ...Args>
-boost::array<T, sizeof... (Args)> newton_solver(const std::tuple<Args...>& tp, boost::array<T, sizeof... (Args)> x, size_t maxiter) {
+boost::array<T, sizeof... (Args)> newton_solver(const std::tuple<Args...>& tp, const boost::array<T, sizeof... (Args)> x, size_t maxiter) {
     constexpr size_t N = sizeof... (Args);
-    matrix_<N, N, boost::any> JACOBIAN = Jacobian(tp);
+    matrix_<N, N, boost::any> JACOBIAN = jacobian(tp);
     const double eps = 1e-12;
     size_t niter{};
     boost::array<T, N> fx;
